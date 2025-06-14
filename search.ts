@@ -10,14 +10,34 @@ interface SearchRequest {
   searchType: string;
 }
 
-router.post("/search", (async (req: Request<{}, {}, SearchRequest>, res: Response) => {
+const validateSearchRequest = (req: Request<{}, {}, SearchRequest>): string | null => {
   const { query, isNameSearch } = req.body;
-//   console.log("Hit, body was,", query, "isNameSearch:", isNameSearch);
   
   if (!query || typeof query !== "string") {
-    return res.status(400).json({ error: "Missing or invalid search query." });
+    return "Missing or invalid search query.";
+  }
+  
+  if (typeof isNameSearch !== "boolean") {
+    return "isNameSearch must be a boolean value.";
+  }
+  
+  if (query.length > 100) {
+    return "Search query is too long.";
+  }
+  
+  return null;
+};
+
+const searchHandler: RequestHandler = async (req: Request<{}, {}, SearchRequest>, res: Response): Promise<void> => {
+  const validationError = validateSearchRequest(req);
+  if (validationError) {
+    res.status(400).json({ error: validationError });
+    return;
   }
 
+  const { query, isNameSearch } = req.body;
+  console.log("Search request received:", { query, isNameSearch });
+  
   try {
     // First, make a GET request to get the cookies
     const getResponse = await fetch("https://doc.wa.gov/information/inmate-search/default.aspx", {
@@ -27,26 +47,32 @@ router.post("/search", (async (req: Request<{}, {}, SearchRequest>, res: Respons
       }
     });
 
+    if (!getResponse.ok) {
+      throw new Error(`Initial request failed with status: ${getResponse.status}`);
+    }
+
     // Get cookies from the response
     const cookies = getResponse.headers.get("set-cookie");
-    // console.log("Received cookies:", cookies);
+    if (!cookies) {
+      throw new Error("No cookies received from initial request");
+    }
+    console.log("Received cookies:", cookies);
 
     let body = "";
     if (!isNameSearch) {
-      body = `DOCNumber=${query.trim()}`;
+      body = `DOCNumber=${encodeURIComponent(query.trim())}`;
     } else {
       const nameParts = query.trim().split(/\s+/);
       if (nameParts.length >= 2) {
-        // For names like "ROLLINS, JOHNNIE" or "ROLLINS JOHNNIE"
         const lastName = nameParts[0].replace(',', '');
         const firstName = nameParts.slice(1).join(' ');
-        body = `LastName=${lastName}&FirstName=${firstName}`;
+        body = `LastName=${encodeURIComponent(lastName)}&FirstName=${encodeURIComponent(firstName)}`;
       } else {
-        body = `LastName=${query.trim()}`;
+        body = `LastName=${encodeURIComponent(query.trim())}`;
       }
-     }
+    }
     
-    // console.log("Request body:", body);
+    console.log("Making search request with body:", body);
 
     // Make the POST request with the cookies
     const response = await fetch("https://doc.wa.gov/information/inmate-search/default.aspx", {
@@ -55,10 +81,14 @@ router.post("/search", (async (req: Request<{}, {}, SearchRequest>, res: Respons
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://doc.wa.gov/information/inmate-search/default.aspx",
-        "Cookie": cookies || "",
+        "Cookie": cookies,
       },
       body: body,
     });
+
+    if (!response.ok) {
+      throw new Error(`Search request failed with status: ${response.status}`);
+    }
 
     const html = await response.text();
     const $ = cheerio.load(html);
@@ -84,12 +114,23 @@ router.post("/search", (async (req: Request<{}, {}, SearchRequest>, res: Respons
         });
       }
     });
-    // console.log(results)
-    return res.json({ count: results.length, results });
+
+    console.log(`Found ${results.length} results`);
+    res.json({ 
+      count: results.length, 
+      results,
+      timestamp: new Date().toISOString()
+    });
   } catch (err) {
-    // console.error("Search error:", err);
-    return res.status(500).json({ error: "Something went wrong while fetching results." });
+    console.error("Search error:", err);
+    res.status(500).json({ 
+      error: "Something went wrong while fetching results.",
+      details: err instanceof Error ? err.message : String(err),
+      timestamp: new Date().toISOString()
+    });
   }
-}) as unknown as express.RequestHandler);
+};
+
+router.post("/search", searchHandler);
 
 export default router;

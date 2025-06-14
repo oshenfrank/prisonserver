@@ -3,3 +3,14 @@ node_modules/
 
 # Build output
 dist/
+.vercel
+
+# Environment variables
+.env
+.env.local
+
+# Log files
+*.log
+
+# Store files
+.DS_Store
